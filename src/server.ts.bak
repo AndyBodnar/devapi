@@ -1,0 +1,75 @@
+import express, { Application } from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import dotenv from 'dotenv';
+import rateLimit from 'express-rate-limit';
+
+import authRoutes from './routes/authRoutes';
+import databaseRoutes from './routes/databaseRoutes';
+import databaseManagementRoutes from './routes/databaseManagementRoutes';
+import userRoutes from './routes/userRoutes';
+import metricsRoutes from './routes/metricsRoutes';
+import haulingRoutes from './routes/hauling';
+import { errorHandler } from './middleware/errorHandler';
+
+dotenv.config();
+
+const app: Application = express();
+const PORT = process.env.PORT || 4000;
+
+// Security Middleware
+app.use(helmet());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  credentials: true
+}));
+
+// Rate Limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100
+});
+app.use('/api/', limiter);
+
+// Logging
+app.use(morgan('dev'));
+
+// Body Parser
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Health Check
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'DevApi is running!',
+    services: ['auth', 'database', 'hauling'],
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/database', databaseRoutes);
+app.use('/api/databases', databaseManagementRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/metrics', metricsRoutes);
+app.use('/api/hauling', haulingRoutes);
+
+// 404 Handler
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+// Error Handler (must be last)
+app.use(errorHandler);
+
+app.listen(PORT, () => {
+  console.log('🚀 DevApi server running on port', PORT);
+  console.log('📊 Environment:', process.env.NODE_ENV);
+  console.log('🚚 48 Hauling routes loaded');
+  console.log('🔗 Health check: http://localhost:' + PORT + '/health');
+});
+
+export default app;

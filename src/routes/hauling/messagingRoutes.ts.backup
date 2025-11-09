@@ -1,0 +1,371 @@
+import { Router, Response } from 'express';
+import { authMiddleware, AuthRequest } from '../../middleware/auth';
+import haulingDB from '../../config/haulingDB';
+
+const router = Router();
+
+// POST /api/hauling/messages - Send a message
+router.post('/', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const senderId = req.user?.userId;
+    const { recipientId, content, messageType } = req.body;
+
+    if (!recipientId || !content) {
+      res.status(400).json({ success: false, error: 'Recipient and content are required' });
+      return;
+    }
+
+    const message = await haulingDB.message.create({
+      data: {
+        senderId,
+        recipientId,
+        content,
+        messageType: messageType || 'DIRECT',
+        isRead: false
+      }
+    });
+
+    res.json({ success: true, data: message });
+  } catch (error) {
+    console.error('Error sending message:', error);
+    res.status(500).json({ success: false, error: 'Failed to send message' });
+  }
+});
+
+// GET /api/hauling/messages/conversation/:userId - Get conversation with specific user
+router.get('/conversation/:userId', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const currentUserId = req.user?.userId;
+    const { userId } = req.params;
+    const { limit = '50' } = req.query;
+
+    const messages = await haulingDB.message.findMany({
+      where: {
+        OR: [
+          { senderId: currentUserId, recipientId: userId },
+          { senderId: userId, recipientId: currentUserId }
+        ]
+      },
+      orderBy: { createdAt: 'desc' },
+      take: parseInt(limit as string),
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            email: true,
+            role: true
+          }
+        },
+        recipient: {
+          select: {
+            id: true,
+            username: true,
+            email: true,
+            role: true
+          }
+        }
+      }
+    });
+
+    // Reverse to show oldest first
+    messages.reverse();
+
+    res.json({ success: true, data: messages });
+  } catch (error) {
+    console.error('Error fetching conversation:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch conversation' });
+  }
+});
+
+// GET /api/hauling/messages/conversations - Get all conversations for current user
+router.get('/conversations', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+
+    // Get all messages where user is sender or recipient
+    const messages = await haulingDB.message.findMany({
+      where: {
+        OR: [
+          { senderId: userId },
+          { recipientId: userId }
+        ]
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            email: true,
+            role: true
+          }
+        },
+        recipient: {
+          select: {
+            id: true,
+            username: true,
+            email: true,
+            role: true
+          }
+        }
+      }
+    });
+
+    // Group by conversation partner
+    const conversationsMap = new Map();
+
+    messages.forEach(message => {
+      const partnerId = message.senderId === userId ? message.recipientId : message.senderId;
+      const partner = message.senderId === userId ? message.recipient : message.sender;
+
+      if (!conversationsMap.has(partnerId)) {
+        conversationsMap.set(partnerId, {
+          userId: partnerId,
+          username: partner.username,
+          email: partner.email,
+          role: partner.role,
+          lastMessage: message.content,
+          lastMessageAt: message.createdAt,
+          unreadCount: 0
+        });
+      }
+
+      // Count unread messages sent to current user
+      if (message.recipientId === userId && !message.isRead) {
+        const conv = conversationsMap.get(partnerId);
+        conv.unreadCount++;
+      }
+    });
+
+    const conversations = Array.from(conversationsMap.values()).sort((a, b) =>
+      new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime()
+    );
+
+    res.json({ success: true, data: conversations });
+  } catch (error) {
+    console.error('Error fetching conversations:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch conversations' });
+  }
+});
+
+// PUT /api/hauling/messages/:messageId/read - Mark message as read
+router.put('/:messageId/read', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { messageId } = req.params;
+    const userId = req.user?.userId;
+
+    const message = await haulingDB.message.findUnique({
+      where: { id: parseInt(messageId) }
+    });
+
+    if (!message) {
+      res.status(404).json({ success: false, error: 'Message not found' });
+      return;
+    }
+
+    // Only recipient can mark as read
+    if (message.recipientId !== userId) {
+      res.status(403).json({ success: false, error: 'Access denied' });
+      return;
+    }
+
+    const updatedMessage = await haulingDB.message.update({
+      where: { id: parseInt(messageId) },
+      data: { isRead: true, readAt: new Date() }
+    });
+
+    res.json({ success: true, data: updatedMessage });
+  } catch (error) {
+    console.error('Error marking message as read:', error);
+    res.status(500).json({ success: false, error: 'Failed to mark message as read' });
+  }
+});
+
+// PUT /api/hauling/messages/conversation/:userId/read - Mark all messages in conversation as read
+router.put('/conversation/:userId/read', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const currentUserId = req.user?.userId;
+    const { userId } = req.params;
+
+    await haulingDB.message.updateMany({
+      where: {
+        senderId: userId,
+        recipientId: currentUserId,
+        isRead: false
+      },
+      data: {
+        isRead: true,
+        readAt: new Date()
+      }
+    });
+
+    res.json({ success: true, message: 'All messages marked as read' });
+  } catch (error) {
+    console.error('Error marking conversation as read:', error);
+    res.status(500).json({ success: false, error: 'Failed to mark conversation as read' });
+  }
+});
+
+// GET /api/hauling/messages/unread - Get unread message count
+router.get('/unread', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+
+    const count = await haulingDB.message.count({
+      where: {
+        recipientId: userId,
+        isRead: false
+      }
+    });
+
+    res.json({ success: true, data: { count } });
+  } catch (error) {
+    console.error('Error fetching unread count:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch unread count' });
+  }
+});
+
+// DELETE /api/hauling/messages/:messageId - Delete a message
+router.delete('/:messageId', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { messageId } = req.params;
+    const userId = req.user?.userId;
+
+    const message = await haulingDB.message.findUnique({
+      where: { id: parseInt(messageId) }
+    });
+
+    if (!message) {
+      res.status(404).json({ success: false, error: 'Message not found' });
+      return;
+    }
+
+    // Only sender can delete
+    if (message.senderId !== userId) {
+      res.status(403).json({ success: false, error: 'Access denied' });
+      return;
+    }
+
+    await haulingDB.message.delete({
+      where: { id: parseInt(messageId) }
+    });
+
+    res.json({ success: true, message: 'Message deleted' });
+  } catch (error) {
+    console.error('Error deleting message:', error);
+    res.status(500).json({ success: false, error: 'Failed to delete message' });
+  }
+});
+
+// POST /api/hauling/announcements - Create announcement (admin only)
+router.post('/announcements', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    if (req.user?.role !== 'ADMIN') {
+      res.status(403).json({ success: false, error: 'Admin access required' });
+      return;
+    }
+
+    const { title, content, priority, expiresAt } = req.body;
+
+    if (!title || !content) {
+      res.status(400).json({ success: false, error: 'Title and content are required' });
+      return;
+    }
+
+    const announcement = await haulingDB.announcement.create({
+      data: {
+        title,
+        content,
+        priority: priority || 'NORMAL',
+        expiresAt: expiresAt ? new Date(expiresAt) : null,
+        isActive: true
+      }
+    });
+
+    res.json({ success: true, data: announcement });
+  } catch (error) {
+    console.error('Error creating announcement:', error);
+    res.status(500).json({ success: false, error: 'Failed to create announcement' });
+  }
+});
+
+// GET /api/hauling/announcements - Get all active announcements
+router.get('/announcements', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { includeExpired = 'false' } = req.query;
+
+    const where: any = {};
+
+    if (includeExpired === 'false') {
+      where.OR = [
+        { expiresAt: null },
+        { expiresAt: { gte: new Date() } }
+      ];
+      where.isActive = true;
+    }
+
+    const announcements = await haulingDB.announcement.findMany({
+      where,
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json({ success: true, data: announcements });
+  } catch (error) {
+    console.error('Error fetching announcements:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch announcements' });
+  }
+});
+
+// PUT /api/hauling/announcements/:id - Update announcement (admin only)
+router.put('/announcements/:id', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    if (req.user?.role !== 'ADMIN') {
+      res.status(403).json({ success: false, error: 'Admin access required' });
+      return;
+    }
+
+    const { id } = req.params;
+    const { title, content, priority, isActive, expiresAt } = req.body;
+
+    const updateData: any = {};
+    if (title !== undefined) updateData.title = title;
+    if (content !== undefined) updateData.content = content;
+    if (priority !== undefined) updateData.priority = priority;
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (expiresAt !== undefined) updateData.expiresAt = expiresAt ? new Date(expiresAt) : null;
+
+    const announcement = await haulingDB.announcement.update({
+      where: { id: parseInt(id) },
+      data: updateData
+    });
+
+    res.json({ success: true, data: announcement });
+  } catch (error) {
+    console.error('Error updating announcement:', error);
+    res.status(500).json({ success: false, error: 'Failed to update announcement' });
+  }
+});
+
+// DELETE /api/hauling/announcements/:id - Delete announcement (admin only)
+router.delete('/announcements/:id', authMiddleware, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    if (req.user?.role !== 'ADMIN') {
+      res.status(403).json({ success: false, error: 'Admin access required' });
+      return;
+    }
+
+    const { id } = req.params;
+
+    await haulingDB.announcement.delete({
+      where: { id: parseInt(id) }
+    });
+
+    res.json({ success: true, message: 'Announcement deleted' });
+  } catch (error) {
+    console.error('Error deleting announcement:', error);
+    res.status(500).json({ success: false, error: 'Failed to delete announcement' });
+  }
+});
+
+export default router;

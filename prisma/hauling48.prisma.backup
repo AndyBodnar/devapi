@@ -1,0 +1,180 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/hauling-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("HAULING_DATABASE_URL")
+}
+
+model Job {
+  id                        BigInt    @id @default(autoincrement())
+  reference                 String?   @db.VarChar(100)
+  pickupAddress             String    @map("pickup_address")
+  pickupLat                 Float?    @map("pickup_lat")
+  pickupLng                 Float?    @map("pickup_lng")
+  deliveryAddress           String    @map("delivery_address")
+  deliveryLat               Float?    @map("delivery_lat")
+  deliveryLng               Float?    @map("delivery_lng")
+  status                    String    @default("pending") @db.VarChar(20)
+  driverId                  String?   @map("driver_id") @db.Uuid
+  assignedTo                String?   @map("assigned_to") @db.Uuid
+  assignedAt                DateTime? @map("assigned_at")
+  startedAt                 DateTime? @map("started_at")
+  completedAt               DateTime? @map("completed_at")
+  notes                     String?
+  customerName              String?   @map("customer_name")
+  customerPhone             String?   @map("customer_phone") @db.VarChar(20)
+  priority                  Int       @default(0)
+  estimatedDurationMinutes  Int?      @map("estimated_duration_minutes")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
+
+  timeLogs        TimeLog[]
+  attachments     JobAttachment[]
+  locationHistory LocationHistory[]
+
+  @@map("jobs")
+}
+
+model TimeLog {
+  id              BigInt    @id @default(autoincrement())
+  jobId           BigInt?   @map("job_id")
+  driverId        String?   @map("driver_id") @db.Uuid
+  userId          String?   @map("user_id") @db.Uuid
+  startTime       DateTime  @map("start_time")
+  endTime         DateTime? @map("end_time")
+  durationMinutes Int?      @map("duration_minutes")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  job Job? @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@map("time_logs")
+}
+
+model DeviceStatus {
+  userId      String   @id @map("user_id") @db.Uuid
+  appType     String   @map("app_type") @db.VarChar(20)
+  lastSeen    DateTime @default(now()) @map("last_seen")
+  appVersion  String?  @map("app_version") @db.VarChar(50)
+  deviceInfo  Json?    @map("device_info")
+
+  @@map("device_status")
+}
+
+model ErrorLog {
+  id           BigInt    @id @default(autoincrement())
+  userId       String?   @map("user_id") @db.Uuid
+  errorMessage String    @map("error_message")
+  stackTrace   String?   @map("stack_trace")
+  appVersion   String?   @map("app_version") @db.VarChar(50)
+  deviceInfo   Json?     @map("device_info")
+  severity     String    @default("medium") @db.VarChar(20)
+  resolved     Boolean   @default(false)
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@map("error_logs")
+}
+
+model ReportedIssue {
+  id         BigInt    @id @default(autoincrement())
+  reporterId String?   @map("reporter_id") @db.Uuid
+  description String
+  status     String    @default("new") @db.VarChar(20)
+  category   String    @default("bug") @db.VarChar(30)
+  priority   String    @default("medium") @db.VarChar(20)
+  reportedAt DateTime  @default(now()) @map("reported_at")
+
+  @@map("reported_issues")
+}
+
+model AppVersion {
+  id            BigInt    @id @default(autoincrement())
+  versionNumber String    @unique @map("version_number") @db.VarChar(50)
+  platform      String    @db.VarChar(20)
+  forceUpdate   Boolean   @default(false) @map("force_update")
+  isActive      Boolean   @default(true) @map("is_active")
+  releasedAt    DateTime  @default(now()) @map("released_at")
+
+  @@map("app_versions")
+}
+
+model AnalyticsEvent {
+  id         BigInt    @id @default(autoincrement())
+  userId     String?   @map("user_id") @db.Uuid
+  eventName  String    @map("event_name") @db.VarChar(100)
+  eventData  Json?     @map("event_data")
+  appVersion String?   @map("app_version") @db.VarChar(50)
+  platform   String?   @db.VarChar(20)
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@map("analytics_events")
+}
+
+model JobAttachment {
+  id             BigInt   @id @default(autoincrement())
+  jobId          BigInt   @map("job_id")
+  uploadedBy     String   @map("uploaded_by") @db.Uuid
+  fileName       String   @map("file_name") @db.VarChar(255)
+  fileUrl        String   @map("file_url")
+  fileType       String?  @map("file_type") @db.VarChar(50)
+  attachmentType String?  @map("attachment_type") @db.VarChar(50)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@map("job_attachments")
+}
+
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  type      String    @db.VarChar(30)
+  title     String
+  body      String
+  data      Json?
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("notifications")
+}
+
+model Announcement {
+  id       String    @id @default(uuid()) @db.Uuid
+  title    String
+  body     String
+  postedBy String?   @map("posted_by") @db.Uuid
+  postedAt DateTime  @default(now()) @map("posted_at")
+
+  @@map("announcements")
+}
+
+model LocationHistory {
+  id         BigInt   @id @default(autoincrement())
+  driverId   String   @map("driver_id") @db.Uuid
+  jobId      BigInt?  @map("job_id")
+  latitude   Decimal  @db.Decimal(10, 8)
+  longitude  Decimal  @db.Decimal(11, 8)
+  accuracy   Decimal? @db.Decimal(10, 2)
+  speed      Decimal? @db.Decimal(10, 2)
+  recordedAt DateTime @map("recorded_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  job Job? @relation(fields: [jobId], references: [id])
+
+  @@map("location_history")
+}
+
+model HaulingProfile {
+  userId                String    @id @map("user_id") @db.Uuid
+  pushToken             String?   @map("push_token")
+  pushPlatform          String?   @map("push_platform") @db.VarChar(20)
+  notificationsEnabled  Boolean   @default(true) @map("notifications_enabled")
+  driverLicenseNumber   String?   @map("driver_license_number") @db.VarChar(50)
+  vehicleAssigned       String?   @map("vehicle_assigned") @db.VarChar(100)
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  @@map("hauling_profiles")
+}
